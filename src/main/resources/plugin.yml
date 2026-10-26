@@ -1,0 +1,15 @@
+name: ChunkScan
+version: '${project.version}'
+main: dev.chunkscan.ChunkScanPlugin
+api-version: '1.17'
+softdepend: [Chunky]
+description: Reads InhabitedTime of all generated chunks and finds the smallest radius containing all visited chunks.
+commands:
+  chunkscan:
+    description: Scan InhabitedTime of all chunks in a world.
+    usage: /chunkscan <minTime> [here | <x> <z> [world]]
+    permission: chunkscan.use
+permissions:
+  chunkscan.use:
+    description: Allows running /chunkscan
+    default: op

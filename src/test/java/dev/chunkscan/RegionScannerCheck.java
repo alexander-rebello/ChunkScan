@@ -1,0 +1,158 @@
+package dev.chunkscan;
+
+import java.io.*;
+import java.nio.file.*;
+import java.util.zip.*;
+
+/**
+ * Self-check without a test framework (run by CI: java -cp target/classes:target/test-classes dev.chunkscan.RegionScannerCheck <workDir> <outDir>).
+ * Builds fake region files in the real .mca format and checks the scanner's answers. */
+public class RegionScannerCheck {
+
+    // --- tiny NBT writer ---
+    static void name(DataOutputStream o, int type, String n) throws IOException { o.writeByte(type); o.writeUTF(n); }
+
+    static byte[] modernChunk(int cx, int cz, long inhabited) throws IOException {
+        ByteArrayOutputStream b = new ByteArrayOutputStream();
+        DataOutputStream o = new DataOutputStream(b);
+        name(o, 10, "");
+        name(o, 3, "DataVersion"); o.writeInt(3953);
+        name(o, 8, "Status"); o.writeUTF("minecraft:full");
+        name(o, 3, "xPos"); o.writeInt(cx);
+        name(o, 3, "zPos"); o.writeInt(cz);
+        // sections: list of compounds with long arrays, byte, nested compound, list of strings
+        name(o, 9, "sections"); o.writeByte(10); o.writeInt(2);
+        for (int s = 0; s < 2; s++) {
+            name(o, 1, "Y"); o.writeByte(s);
+            name(o, 10, "block_states");
+              name(o, 9, "palette"); o.writeByte(10); o.writeInt(1);
+                name(o, 8, "Name"); o.writeUTF("minecraft:stone"); o.writeByte(0);
+              name(o, 12, "data"); o.writeInt(256); for (int i = 0; i < 256; i++) o.writeLong(i * 31L);
+            o.writeByte(0);
+            name(o, 7, "BlockLight"); o.writeInt(2048); o.write(new byte[2048]);
+            name(o, 9, "empty"); o.writeByte(0); o.writeInt(0);
+            o.writeByte(0);
+        }
+        name(o, 11, "heights"); o.writeInt(37); for (int i = 0; i < 37; i++) o.writeInt(i);
+        name(o, 6, "d"); o.writeDouble(1.5);
+        name(o, 5, "f"); o.writeFloat(1.5f);
+        name(o, 2, "s"); o.writeShort(7);
+        name(o, 4, "LastUpdate"); o.writeLong(123456);
+        name(o, 4, "InhabitedTime"); o.writeLong(inhabited);
+        name(o, 9, "block_entities"); o.writeByte(10); o.writeInt(0);
+        o.writeByte(0);
+        return b.toByteArray();
+    }
+
+    static byte[] legacyChunk(int cx, int cz, long inhabited) throws IOException {
+        ByteArrayOutputStream b = new ByteArrayOutputStream();
+        DataOutputStream o = new DataOutputStream(b);
+        name(o, 10, "");
+        name(o, 3, "DataVersion"); o.writeInt(2586);
+        name(o, 10, "Level");
+          name(o, 3, "xPos"); o.writeInt(cx);
+          name(o, 3, "zPos"); o.writeInt(cz);
+          name(o, 7, "Biomes"); o.writeInt(10); o.write(new byte[10]);
+          name(o, 4, "InhabitedTime"); o.writeLong(inhabited);
+        o.writeByte(0);
+        o.writeByte(0);
+        return b.toByteArray();
+    }
+
+    static byte[] compress(byte[] raw, int type) throws IOException {
+        if (type == 3) return raw;
+        ByteArrayOutputStream b = new ByteArrayOutputStream();
+        try (OutputStream o = type == 1 ? new GZIPOutputStream(b) : new DeflaterOutputStream(b)) { o.write(raw); }
+        return b.toByteArray();
+    }
+
+    /** chunks: {localIndex, type(1/2/3/4, |128 external), payload} */
+    static void writeRegion(File dir, int rx, int rz, Object[][] chunks) throws IOException {
+        ByteArrayOutputStream body = new ByteArrayOutputStream();
+        int[] locs = new int[1024];
+        int sector = 2;
+        for (Object[] c : chunks) {
+            int idx = (Integer) c[0], type = (Integer) c[1];
+            byte[] data = (byte[]) c[2];
+            ByteArrayOutputStream ch = new ByteArrayOutputStream();
+            DataOutputStream o = new DataOutputStream(ch);
+            if ((type & 128) != 0) {
+                int cx = rx * 32 + (idx & 31), cz = rz * 32 + (idx >>> 5);
+                Files.write(new File(dir, "c." + cx + "." + cz + ".mcc").toPath(), data);
+                o.writeInt(1); o.writeByte(type);
+            } else {
+                o.writeInt(data.length + 1); o.writeByte(type); o.write(data);
+            }
+            byte[] bytes = ch.toByteArray();
+            int sectors = (bytes.length + 4095) / 4096;
+            byte[] padded = new byte[sectors * 4096];
+            System.arraycopy(bytes, 0, padded, 0, bytes.length);
+            body.write(padded);
+            locs[idx] = (sector << 8) | sectors;
+            sector += sectors;
+        }
+        try (DataOutputStream f = new DataOutputStream(new FileOutputStream(new File(dir, "r." + rx + "." + rz + ".mca")))) {
+            for (int l : locs) f.writeInt(l);
+            f.write(new byte[4096]); // timestamps
+            f.write(body.toByteArray());
+        }
+    }
+
+    static void check(boolean ok, String what) {
+        System.out.println((ok ? "PASS " : "FAIL ") + what);
+        if (!ok) System.exit(1);
+    }
+
+    public static void main(String[] args) throws Exception {
+        File dir = new File(args[0]);
+        dir.mkdirs();
+        for (File f : dir.listFiles()) f.delete();
+
+        writeRegion(dir, 0, 0, new Object[][]{
+            {0, 2, compress(modernChunk(0, 0, 100000), 2)},             // 0,0 zlib, 83 min
+            {5 + 3 * 32, 2, compress(modernChunk(5, 3, 0), 2)},         // 5,3 never visited
+            {31 + 31 * 32, 1, compress(modernChunk(31, 31, 700), 1)},   // 31,31 gzip, 35s
+            {2, 3, legacyChunk(2, 0, 50)},                              // 2,0 uncompressed pre-1.18, 2.5s
+            {7, 4, new byte[]{1, 2, 3}},                                // LZ4 -> skipped
+            {8, 2, new byte[]{9, 9, 9}},                                // corrupt
+        });
+        // external .mcc chunk at -20,-10 (region -1,-1, local 12,22)
+        writeRegion(dir, -1, -1, new Object[][]{
+            {12 + 22 * 32, 2 | 128, compress(modernChunk(-20, -10, 30000), 2)},
+        });
+        // a fully pre-generated, never visited region
+        Object[][] pregen = new Object[1024][];
+        byte[] empty = compress(modernChunk(0, 0, 0), 2);
+        for (int i = 0; i < 1024; i++) pregen[i] = new Object[]{i, 2, empty};
+        writeRegion(dir, 2, 0, pregen);
+        new File(dir, "r.5.5.mca").createNewFile(); // empty region file
+
+        RegionScanner.Result r = RegionScanner.scan(dir, 2, d -> {});
+        Analysis a = new Analysis(r, 0, 0, TimeParse.toTicks("30s"));
+        for (String l : a.summary(r)) System.out.println("  " + l);
+
+        check(r.totalChunks == 6 + 1 + 1024, "total chunks = " + r.totalChunks);
+        check(r.lz4Skipped == 1, "lz4 skipped");
+        check(r.unreadable == 1, "corrupt counted as unreadable");
+        check(r.visitedCount == 4, "visited (>0) = " + r.visitedCount);
+        check(a.qualifying == 3, "qualifying (>30s) = " + a.qualifying);
+        check(a.circleRadius == 725, "circle radius = " + a.circleRadius);
+        check(a.squareRadius == 512, "square radius = " + a.squareRadius);
+        check(a.circleFarX == 31 && a.circleFarZ == 31, "farthest chunk 31,31");
+        check(a.outsideCircle == 1024, "pregen region outside circle = " + a.outsideCircle);
+        check(a.bucketCounts[0] == 1031 - 2 - 4, "never-visited bucket");
+
+        Analysis b = new Analysis(r, 0, 0, TimeParse.toTicks("1m"));
+        check(b.qualifying == 2 && b.circleRadius == (int) Math.ceil(Math.hypot(320, 160)), "1m threshold -> radius " + b.circleRadius);
+
+        check(TimeParse.toTicks("600t") == 600 && TimeParse.toTicks("5m") == 6000
+                && TimeParse.toTicks("2") == 40 && TimeParse.toTicks("1h") == 72000
+                && TimeParse.format(1200).equals("1m") && TimeParse.format(700).equals("35s"), "time parsing");
+
+        File out = new File(args[1]);
+        out.mkdirs();
+        Analysis.writeCsv(r, new File(out, "test.csv"));
+        a.writeHeatmap(r, new File(out, "test.png"), 2048);
+        System.out.println(new String(Files.readAllBytes(new File(out, "test.csv").toPath())));
+    }
+}

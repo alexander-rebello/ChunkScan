@@ -1,0 +1,32 @@
+name: Build
+
+on:
+  push:
+    branches: [master, dev]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Build jar
+        run: mvn -B package
+
+      - name: Region scanner self-check
+        run: java -Djava.awt.headless=true -cp target/classes:target/test-classes dev.chunkscan.RegionScannerCheck target/check-world target/check-out
+
+      - name: Upload jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChunkScan-build-${{ github.run_number }}
+          path: target/ChunkScan-*.jar
+          if-no-files-found: error
