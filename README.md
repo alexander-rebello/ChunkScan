@@ -8,16 +8,22 @@ spent more than a given time in. Meant for cleaning up worlds that were pre-gene
 ## Usage
 
 ```
-/chunkscan <minTime> [here | <x> <z> [world]]
+/chunkscan <minTime> [chunky | spawn [world] | origin [world] | here | <x> <z> [world]]
 ```
 
 - `minTime`: `30s`, `5m`, `1h`, `600t` (ticks); a plain number means seconds. Chunks need an InhabitedTime
   strictly above this to count as visited.
 - Center:
-  - `<x> <z> [world]` – explicit coordinates
+  - `chunky` – Chunky's current selection (`/chunky world`, `/chunky center`)
+  - `spawn [world]` – the world spawn
+  - `origin [world]` – 0, 0
   - `here` – your own position
-  - nothing – Chunky's current selection (`/chunky world`, `/chunky center`), or your position / the world spawn
-    if Chunky isn't installed
+  - `<x> <z> [world]` – a specific point
+  - nothing – same as `chunky`, falling back to your position (or the spawn from the console) if Chunky isn't installed
+
+  Without a world, the world you're in is used (the main world from the console).
+
+Tab completion suggests the options.
 
 Permission: `chunkscan.use` (op by default).
 
@@ -51,5 +57,5 @@ In `plugins/ChunkScan/`:
 mvn package
 ```
 
-The jar ends up in `target/`. GitHub Actions builds it on every push to `master` and `dev`; download it from the
-run's artifacts.
+The jar ends up in `target/`. GitHub Actions builds it on every push to `master` (or manually via "Run workflow");
+download it from the run's artifacts. Pushes to `dev` are not built.
