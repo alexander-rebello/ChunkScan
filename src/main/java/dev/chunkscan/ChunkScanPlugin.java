@@ -22,14 +22,16 @@ public final class ChunkScanPlugin extends JavaPlugin {
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     @Override
-    public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+    public boolean onCommand(CommandSender sender, Command command, String label, String[] rawArgs) {
+        boolean export = hasFlag(rawArgs);
+        String[] args = stripFlag(rawArgs);
         if (args.length < 1 || args.length > 4) return usage(sender, label);
 
         long thresholdTicks;
         try {
             thresholdTicks = TimeParse.toTicks(args[0]);
         } catch (NumberFormatException e) {
-            sender.sendMessage(P + "\u00a7cInvalid time: " + args[0]);
+            sender.sendMessage(P + "§cInvalid time: " + args[0]);
             return true;
         }
 
@@ -55,7 +57,7 @@ public final class ChunkScanPlugin extends JavaPlugin {
                     break;
                 }
                 if (mode.equals("chunky")) {
-                    sender.sendMessage(P + "\u00a7cCould not read Chunky's selection (is Chunky installed and enabled?).");
+                    sender.sendMessage(P + "§cCould not read Chunky's selection (is Chunky installed and enabled?).");
                     return true;
                 }
                 if (sender instanceof Player) {
@@ -75,7 +77,7 @@ public final class ChunkScanPlugin extends JavaPlugin {
             }
             case "here": {
                 if (!(sender instanceof Player)) {
-                    sender.sendMessage(P + "\u00a7c'here' only works for players.");
+                    sender.sendMessage(P + "§c'here' only works for players.");
                     return true;
                 }
                 if (args.length > 2) return usage(sender, label);
@@ -91,7 +93,7 @@ public final class ChunkScanPlugin extends JavaPlugin {
                 if (args.length > 3) return usage(sender, label);
                 world = args.length == 3 ? Bukkit.getWorld(args[2]) : defaultWorld(sender);
                 if (world == null) {
-                    sender.sendMessage(P + "\u00a7cWorld not found: " + args[2]);
+                    sender.sendMessage(P + "§cWorld not found: " + args[2]);
                     return true;
                 }
                 if (mode.equals("spawn")) {
@@ -116,7 +118,7 @@ public final class ChunkScanPlugin extends JavaPlugin {
                 }
                 world = args.length == 4 ? Bukkit.getWorld(args[3]) : defaultWorld(sender);
                 if (world == null) {
-                    sender.sendMessage(P + "\u00a7cWorld not found: " + args[3]);
+                    sender.sendMessage(P + "§cWorld not found: " + args[3]);
                     return true;
                 }
                 source = "given coordinates";
@@ -141,7 +143,8 @@ public final class ChunkScanPlugin extends JavaPlugin {
         int regionCount = RegionScanner.listRegionFiles(regionDir).length;
         sender.sendMessage(P + "Center " + cx + ", " + cz + " in " + world.getName() + " from " + source + ".");
         sender.sendMessage(P + "Scanning " + regionCount + " region files on " + threads
-                + " threads, min time " + TimeParse.format(thresholdTicks) + ". The server may lag until this finishes.");
+                + " threads, min time " + TimeParse.format(thresholdTicks)
+                + (export ? ", exporting every chunk" : "") + ". The server may lag until this finishes.");
 
         final int fcx = cx, fcz = cz;
         final World fworld = world;
@@ -151,30 +154,38 @@ public final class ChunkScanPlugin extends JavaPlugin {
             try {
                 long start = System.currentTimeMillis();
                 int step = Math.max(1, regionCount / 10);
-                RegionScanner.Result r = RegionScanner.scan(regionDir, threads, done -> {
-                    if (done % step == 0 && done < regionCount) {
-                        int pct = (int) (100L * done / Math.max(1, regionCount));
-                        tell(sender, P + "§7" + pct + "% (" + done + "/" + regionCount + ")");
-                    }
-                });
-                Analysis a = new Analysis(r, fcx, fcz, fthreshold);
-
                 File dir = getDataFolder();
                 dir.mkdirs();
                 String base = fworld.getName() + "-" + new SimpleDateFormat("yyyyMMdd-HHmmss").format(new Date());
-                File csv = new File(dir, base + ".csv");
+                File csv = new File(dir, base + "-visited.csv");
                 File png = new File(dir, base + ".png");
+                File exportFile = new File(dir, base + "-chunks.csv");
+
+                RegionScanner.Result r;
+                long exportedRows = 0;
+                try (ChunkExport sink = export ? new ChunkExport(exportFile, fcx, fcz, fthreshold) : null) {
+                    r = RegionScanner.scan(regionDir, threads, sink, done -> {
+                        if (done % step == 0 && done < regionCount) {
+                            int pct = (int) (100L * done / Math.max(1, regionCount));
+                            tell(sender, P + "§7" + pct + "% (" + done + "/" + regionCount + ")");
+                        }
+                    });
+                    if (sink != null) exportedRows = sink.rows();
+                }
+                Analysis a = new Analysis(r, fcx, fcz, fthreshold);
                 Analysis.writeCsv(r, csv);
                 a.writeHeatmap(r, png, 4096);
 
                 long secs = (System.currentTimeMillis() - start) / 1000;
                 List<String> lines = a.summary(r);
+                final long rows = exportedRows;
                 Bukkit.getScheduler().runTask(this, () -> {
                     sender.sendMessage(P + "§aDone in " + secs + "s.");
                     for (String l : lines) sender.sendMessage(P + l);
                     if (a.qualifying > 0) suggestChunky(sender, a, fworld.getName(), fcx, fcz, fshape);
-                    sender.sendMessage(P + "Files: plugins/" + dir.getName() + "/" + csv.getName()
-                            + " and " + png.getName());
+                    sender.sendMessage(P + "Files in plugins/" + dir.getName() + "/: " + png.getName() + ", " + csv.getName()
+                            + (export ? ", " + exportFile.getName() + " (" + rows + " chunks, "
+                            + mb(exportFile.length()) + ")" : ""));
                 });
             } catch (Throwable t) {
                 getLogger().severe("Scan failed: " + t);
@@ -206,11 +217,29 @@ public final class ChunkScanPlugin extends JavaPlugin {
     }
 
     private boolean usage(CommandSender sender, String label) {
-        sender.sendMessage(P + "Usage: /" + label + " <minTime> [chunky | spawn [world] | origin [world] | here | <x> <z> [world]]");
+        sender.sendMessage(P + "Usage: /" + label + " <minTime> [chunky | spawn [world] | origin [world] | here | <x> <z> [world]] [--export]");
         sender.sendMessage(P + "minTime: e.g. 30s, 5m, 1h, 600t (ticks); a plain number means seconds.");
         sender.sendMessage(P + "Center: chunky = Chunky's selection, spawn = world spawn, origin = 0 0, here = your position.");
         sender.sendMessage(P + "Without a center, Chunky's selection is used (else your position / spawn).");
+        sender.sendMessage(P + "--export also writes a CSV listing every generated chunk with its details.");
         return true;
+    }
+
+    static final String EXPORT_FLAG = "--export";
+
+    private static boolean hasFlag(String[] args) {
+        for (String a : args) if (a.equalsIgnoreCase(EXPORT_FLAG)) return true;
+        return false;
+    }
+
+    private static String[] stripFlag(String[] args) {
+        List<String> out = new ArrayList<>();
+        for (String a : args) if (!a.equalsIgnoreCase(EXPORT_FLAG)) out.add(a);
+        return out.toArray(new String[0]);
+    }
+
+    private static String mb(long bytes) {
+        return String.format(Locale.ROOT, "%.1f MB", bytes / 1024.0 / 1024.0);
     }
 
     private static World defaultWorld(CommandSender sender) {
@@ -218,8 +247,14 @@ public final class ChunkScanPlugin extends JavaPlugin {
     }
 
     @Override
-    public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
+    public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] rawArgs) {
         List<String> options = new ArrayList<>();
+        if (rawArgs.length == 0) return options;
+        // complete as if --export weren't there (it may appear anywhere after minTime)
+        String[] earlier = stripFlag(Arrays.copyOf(rawArgs, rawArgs.length - 1));
+        String[] args = Arrays.copyOf(earlier, earlier.length + 1);
+        args[args.length - 1] = rawArgs[rawArgs.length - 1];
+        if (args.length >= 2 && !hasFlag(rawArgs)) options.add(EXPORT_FLAG);
         if (args.length == 1) {
             options.addAll(Arrays.asList("30s", "1m", "5m", "30m", "1h"));
         } else if (args.length == 2) {

@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # full history + tags for the changelog
 
       - uses: actions/setup-java@v6
         with:
@@ -45,9 +47,40 @@ jobs:
             echo "::notice::v$version is already released. Bump the version in pom.xml to publish a new release."
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
+            # changelog: commit subjects since the previous release tag
+            previous=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
+            range=${previous:+$previous..}HEAD
+            git log --no-merges --format='- %s' "$range" > CHANGELOG.md
+            echo "Changelog:" && cat CHANGELOG.md
           fi
 
-      - name: Create release
+      # Modrinth goes first: if it fails, no GitHub release exists yet and a re-run retries both.
+      # Skipped until the repository variable MODRINTH_PROJECT_ID is set.
+      - name: Publish to Modrinth
+        if: steps.version.outputs.exists == 'false' && vars.MODRINTH_PROJECT_ID != ''
+        uses: Kir-Antipov/mc-publish@v3.3
+        with:
+          modrinth-id: ${{ vars.MODRINTH_PROJECT_ID }}
+          modrinth-token: ${{ secrets.MODRINTH_PAT }}
+          files: target/ChunkScan-*.jar
+          name: ChunkScan ${{ steps.version.outputs.version }}
+          version: ${{ steps.version.outputs.version }}
+          version-type: release
+          changelog-file: CHANGELOG.md
+          loaders: |
+            bukkit
+            spigot
+            paper
+            purpur
+          game-versions: '>=1.18'
+          game-version-filter: releases
+          java: |
+            17
+            21
+          dependencies: |
+            chunky(optional){modrinth:chunky}
+
+      - name: Create GitHub release
         if: steps.version.outputs.exists == 'false'
         uses: softprops/action-gh-release@v3
         with:
@@ -56,4 +89,4 @@ jobs:
           target_commitish: ${{ github.sha }}
           files: target/ChunkScan-*.jar
           fail_on_unmatched_files: true
-          generate_release_notes: true
+          body_path: CHANGELOG.md

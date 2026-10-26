@@ -154,5 +154,31 @@ public class RegionScannerCheck {
         Analysis.writeCsv(r, new File(out, "test.csv"));
         a.writeHeatmap(r, new File(out, "test.png"), 2048);
         System.out.println(new String(Files.readAllBytes(new File(out, "test.csv").toPath())));
+
+        // full export: every chunk entry, with details
+        File exp = new File(out, "chunks.csv");
+        RegionScanner.Result r2;
+        long rows;
+        try (ChunkExport sink = new ChunkExport(exp, 0, 0, TimeParse.toTicks("30s"))) {
+            r2 = RegionScanner.scan(dir, 3, sink, d -> {});
+            rows = sink.rows();
+        }
+        java.util.List<String> lines = Files.readAllLines(exp.toPath());
+        check(lines.get(0).equals(ChunkExport.HEADER.trim()), "export header");
+        check(rows == 1031 && lines.size() == 1032, "export has one row per chunk: " + rows);
+        check(r2.totalChunks == r.totalChunks && r2.visitedCount == r.visitedCount, "export scan matches fast scan");
+        java.util.Map<String, String> byChunk = new java.util.HashMap<>();
+        for (String l : lines.subList(1, lines.size())) {
+            String[] f = l.split(",", 2);
+            byChunk.put(f[0] + "," + f[1].split(",")[0], l);
+        }
+        System.out.println(ChunkExport.HEADER.trim());
+        for (String k : new String[]{"0,0", "31,31", "2,0", "-20,-10", "7,0", "8,0", "5,3"}) System.out.println(byChunk.get(k));
+        check(byChunk.get("31,31").equals("31,31,496,496,r.0.0.mca,700,0:00:35,true,713,full,3953,123456,gzip,4096,"), "modern gzip chunk row");
+        check(byChunk.get("2,0").equals("2,0,32,0,r.0.0.mca,50,0:00:02,false,41,,2586,,none,4096,"), "legacy chunk row");
+        check(byChunk.get("-20,-10").startsWith("-20,-10,-320,-160,r.-1.-1.mca,30000,0:25:00,true,") && byChunk.get("-20,-10").contains(",zlib+external,"), "external chunk row");
+        check(byChunk.get("7,0").endsWith(",lz4,4096,LZ4 compression not supported") && byChunk.get("7,0").contains(",,,"), "lz4 row");
+        check(byChunk.get("8,0").contains("corrupt chunk data"), "corrupt row");
+        check(byChunk.get("0,0").contains(",1:23:20,true,"), "hms format");
     }
 }

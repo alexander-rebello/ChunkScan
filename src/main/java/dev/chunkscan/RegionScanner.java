@@ -39,6 +39,25 @@ public final class RegionScanner {
         boolean isEmpty() { for (long l : present) if (l != 0) return false; return true; }
     }
 
+    /** One chunk as found on disk, handed to a {@link ChunkSink} when exporting. */
+    public static final class ChunkRecord {
+        public int chunkX, chunkZ;
+        public String region;
+        public String compression;     // gzip, zlib, none, lz4, custom; "+external" if stored in a .mcc file
+        public long sizeBytes;         // bytes on disk: allocated 4 KiB sectors, or the .mcc file size
+        public boolean readable;       // false if the chunk could not be decoded (see error)
+        public String error;           // null if fine
+        public long inhabitedTicks;
+        public int dataVersion = -1;
+        public long lastUpdate = -1;
+        public String status;
+    }
+
+    /** Receives all chunks of one region file at a time; called from worker threads. */
+    public interface ChunkSink {
+        void accept(List<ChunkRecord> chunks) throws IOException;
+    }
+
     /** Everything a scan found. Visited = InhabitedTime > 0. */
     public static final class Result {
         public final List<Region> regions = new ArrayList<>();
@@ -77,6 +96,14 @@ public final class RegionScanner {
      * @param progress called with the number of finished region files (from worker threads)
      */
     public static Result scan(File regionDir, int threads, IntConsumer progress) throws InterruptedException {
+        return scan(regionDir, threads, null, progress);
+    }
+
+    /**
+     * @param sink if not null, every chunk (including unreadable ones) is passed to it with full details;
+     *             this reads the whole chunk NBT and is therefore slower
+     */
+    public static Result scan(File regionDir, int threads, ChunkSink sink, IntConsumer progress) throws InterruptedException {
         File[] files = listRegionFiles(regionDir);
         Result result = new Result();
         AtomicInteger done = new AtomicInteger();
@@ -89,15 +116,18 @@ public final class RegionScanner {
             List<Future<?>> futures = new ArrayList<>();
             for (File f : files) {
                 futures.add(pool.submit(() -> {
-                    scanRegion(f, result);
+                    scanRegion(f, result, sink);
                     progress.accept(done.incrementAndGet());
+                    return null;
                 }));
             }
             for (Future<?> fu : futures) {
                 try {
                     fu.get();
                 } catch (java.util.concurrent.ExecutionException e) {
-                    // scanRegion catches its own IO errors; anything here is a bug, count and continue
+                    // scanRegion catches chunk errors itself; this is a sink (export file) failure or a bug
+                    Throwable cause = e.getCause();
+                    if (cause instanceof IOException) throw new IllegalStateException("Writing export failed: " + cause.getMessage(), cause);
                     synchronized (result) { result.unreadable++; }
                 }
             }
@@ -107,12 +137,13 @@ public final class RegionScanner {
         return result;
     }
 
-    static void scanRegion(File file, Result result) {
+    static void scanRegion(File file, Result result, ChunkSink sink) throws IOException {
         Matcher m = REGION_NAME.matcher(file.getName());
         if (!m.matches()) return;
         int rx = Integer.parseInt(m.group(1));
         int rz = Integer.parseInt(m.group(2));
         Region region = new Region(rx, rz);
+        String regionName = file.getName();
 
         byte[] data;
         try {
@@ -130,20 +161,37 @@ public final class RegionScanner {
         long[] vt = new long[1024];
         int n = 0;
         long total = 0, ok = 0, bad = 0, lz4 = 0;
+        List<ChunkRecord> records = sink == null ? null : new ArrayList<>();
 
         for (int i = 0; i < 1024; i++) {
             int loc = readInt(data, i * 4);
             if (loc == 0) continue;
             int sectorOffset = loc >>> 8;
+            int sectors = loc & 0xFF;
             int cx = rx * 32 + (i & 31);
             int cz = rz * 32 + (i >>> 5);
+            ChunkRecord rec = null;
+            if (records != null) {
+                rec = new ChunkRecord();
+                rec.chunkX = cx;
+                rec.chunkZ = cz;
+                rec.region = regionName;
+                rec.sizeBytes = sectors * 4096L;
+                records.add(rec);
+            }
+
             long pos = (long) sectorOffset * 4096;
-            if (sectorOffset < 2 || pos + 5 > data.length) { bad++; continue; }
+            if (sectorOffset < 2 || pos + 5 > data.length) {
+                bad++;
+                if (rec != null) rec.error = "chunk offset points outside the region file";
+                continue;
+            }
 
             int length = readInt(data, (int) pos);
             int type = data[(int) pos + 4] & 0xFF;
             boolean external = (type & 0x80) != 0;
             type &= 0x7F;
+            if (rec != null) rec.compression = compressionName(type) + (external ? "+external" : "");
 
             byte[] payload;
             int off, len;
@@ -151,11 +199,20 @@ public final class RegionScanner {
                 File mcc = new File(file.getParentFile(), "c." + cx + "." + cz + ".mcc");
                 try {
                     payload = Files.readAllBytes(mcc.toPath());
-                } catch (IOException e) { bad++; continue; }
+                } catch (IOException e) {
+                    bad++;
+                    if (rec != null) rec.error = "external chunk file " + mcc.getName() + " missing";
+                    continue;
+                }
                 off = 0;
                 len = payload.length;
+                if (rec != null) rec.sizeBytes += payload.length;
             } else {
-                if (length < 1 || pos + 4 + length > data.length) { bad++; continue; }
+                if (length < 1 || pos + 4 + length > data.length) {
+                    bad++;
+                    if (rec != null) rec.error = "chunk length invalid";
+                    continue;
+                }
                 payload = data;
                 off = (int) pos + 5;
                 len = length - 1;
@@ -164,25 +221,53 @@ public final class RegionScanner {
             total++;
             region.set(i);
 
-            if (type == 4) { lz4++; continue; } // LZ4 needs an extra library; rare (non-default setting)
-            long ticks;
+            if (type == 4) { // LZ4 needs an extra library; rare (non-default setting)
+                lz4++;
+                if (rec != null) rec.error = "LZ4 compression not supported";
+                continue;
+            }
+            Nbt.ChunkData chunk;
             try (InputStream raw = new ByteArrayInputStream(payload, off, len);
                  InputStream in = decompress(raw, type)) {
-                if (in == null) { bad++; continue; }
-                ticks = Nbt.findInhabitedTime(new DataInputStream(new BufferedInputStream(in, 16384)));
+                if (in == null) {
+                    bad++;
+                    if (rec != null) rec.error = "unknown compression type " + type;
+                    continue;
+                }
+                chunk = Nbt.read(new DataInputStream(new BufferedInputStream(in, 16384)), rec != null);
             } catch (IOException | RuntimeException e) {
                 bad++;
+                if (rec != null) rec.error = "corrupt chunk data: " + e.getClass().getSimpleName();
                 continue;
             }
             ok++;
-            if (ticks > 0) {
+            if (rec != null) {
+                rec.readable = true;
+                rec.inhabitedTicks = chunk.inhabitedTime;
+                rec.dataVersion = chunk.dataVersion;
+                rec.lastUpdate = chunk.lastUpdate;
+                rec.status = chunk.status;
+            }
+            if (chunk.inhabitedTime > 0) {
                 vx[n] = cx;
                 vz[n] = cz;
-                vt[n] = ticks;
+                vt[n] = chunk.inhabitedTime;
                 n++;
             }
         }
         result.addRegion(region, vx, vz, vt, n, total, ok, bad, lz4);
+        if (sink != null && !records.isEmpty()) sink.accept(records);
+    }
+
+    private static String compressionName(int type) {
+        switch (type) {
+            case 1: return "gzip";
+            case 2: return "zlib";
+            case 3: return "none";
+            case 4: return "lz4";
+            case 127: return "custom";
+            default: return "unknown(" + type + ")";
+        }
     }
 
     private static InputStream decompress(InputStream raw, int type) throws IOException {
