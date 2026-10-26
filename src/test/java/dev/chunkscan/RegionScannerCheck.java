@@ -173,6 +173,47 @@ public class RegionScannerCheck {
         java.util.List<String> lines2 = a.summary(r, sf, sf.dimensionBytes + 1000);
         for (String l : lines2) if (l.contains("size") || l.contains("after trim")) System.out.println("  " + l);
 
+        // optimizer: simulate Chunky's inhabited trim on a copy, repack, compare with the forecast and the scan
+        long tTicks = TimeParse.toTicks("30s");
+        SizeForecast.Outcome inh = sf.inhabitedOutcome(r, tTicks);
+        File copy = new File(args[0] + "-optimize");
+        copyDir(dim, copy);
+        java.util.Set<Long> above = new java.util.HashSet<>();
+        for (int i = 0; i < r.visitedCount; i++) if (r.visitedTicks[i] > tTicks) above.add(pack(r.visitedX[i], r.visitedZ[i]));
+        simulateChunkyTrim(copy, (x, z) -> above.contains(pack(x, z)));
+        check(dirBytes(copy) == inh.afterTrim, "inhabited trim forecast matches simulated trim: " + SizeForecast.human(inh.afterTrim));
+        RegionScanner.Result beforeOpt = RegionScanner.scan(new File(copy, "region"), 2, d -> {});
+        java.util.List<String> optLog = new java.util.ArrayList<>();
+        RegionOptimizer.Stats st = RegionOptimizer.optimizeDimension(copy, optLog::add);
+        optLog.forEach(l -> System.out.println("  log: " + l));
+        check(dirBytes(copy) == inh.afterOptimize, "optimize forecast matches real result: "
+                + SizeForecast.human(dirBytes(copy)) + " vs " + SizeForecast.human(inh.afterOptimize));
+        check(st.rewritten == 1 && st.unchanged == 1 && st.skippedInvalid == 2 && st.bytesBefore - st.bytesAfter == inh.afterTrim - inh.afterOptimize,
+                "repacked r.0.0, r.-1.-1 already compact, fake entities files skipped and counted unchanged");
+        RegionScanner.Result afterOpt = RegionScanner.scan(new File(copy, "region"), 2, d -> {});
+        check(afterOpt.totalChunks == beforeOpt.totalChunks && afterOpt.visitedCount == beforeOpt.visitedCount
+                && afterOpt.parsed == beforeOpt.parsed && afterOpt.unreadable == beforeOpt.unreadable
+                && afterOpt.lz4Skipped == beforeOpt.lz4Skipped, "repacked files contain the same chunks");
+        long sumBefore = 0, sumAfter = 0;
+        for (int i = 0; i < beforeOpt.visitedCount; i++) sumBefore += beforeOpt.visitedTicks[i] * 31 + beforeOpt.visitedX[i] * 7 + beforeOpt.visitedZ[i];
+        for (int i = 0; i < afterOpt.visitedCount; i++) sumAfter += afterOpt.visitedTicks[i] * 31 + afterOpt.visitedX[i] * 7 + afterOpt.visitedZ[i];
+        check(sumBefore == sumAfter, "same chunk contents after repacking");
+        RegionOptimizer.Stats again = RegionOptimizer.optimizeDimension(copy, l -> {});
+        check(again.rewritten == 0 && again.unchanged == 2 && again.bytesBefore == again.bytesAfter, "second run changes nothing");
+        // a file with a broken header is left untouched
+        File broken = new File(copy, "region/r.7.7.mca");
+        byte[] bad = new byte[3 * 4096];
+        bad[0] = 0; bad[1] = 0; bad[2] = 9; bad[3] = 1; // chunk 0 at sector 9 (beyond the end)
+        Files.write(broken.toPath(), bad);
+        java.util.List<String> badLog = new java.util.ArrayList<>();
+        RegionOptimizer.optimizeDimension(copy, badLog::add);
+        check(java.util.Arrays.equals(Files.readAllBytes(broken.toPath()), bad) && String.join("\n", badLog).contains("Skipped r.7.7.mca"),
+                "broken file skipped and untouched");
+        // option texts
+        java.util.List<String> opts = a.trimOptions(r, sf, -1, "world", null);
+        opts.forEach(l -> System.out.println("  " + l));
+        check(String.join("\n", opts).contains("/chunky trim world square 0 0 0 0 outside 600"), "option 2 command has both radii");
+
         // minTime is optional; "x z" and "x z world" are coordinates
         check(TimeParse.startsWithTime(new String[]{"5m"}) && TimeParse.startsWithTime(new String[]{"30", "100", "200"})
                 && TimeParse.startsWithTime(new String[]{"30", "chunky"})
@@ -218,5 +259,51 @@ public class RegionScannerCheck {
         check(byChunk.get("7,0").endsWith(",lz4,4096,LZ4 compression not supported") && byChunk.get("7,0").contains(",,,"), "lz4 row");
         check(byChunk.get("8,0").contains("corrupt chunk data"), "corrupt row");
         check(byChunk.get("0,0").contains(",1:23:20,true,"), "hms format");
+    }
+
+    static long pack(int x, int z) {
+        return ((long) x << 32) | (z & 0xFFFFFFFFL);
+    }
+
+    static void copyDir(File from, File to) throws IOException {
+        if (to.exists()) try (var w = Files.walk(to.toPath())) { w.sorted(java.util.Comparator.reverseOrder()).forEach(p -> p.toFile().delete()); }
+        try (var w = Files.walk(from.toPath())) {
+            for (Path p : (Iterable<Path>) w::iterator) {
+                Path t = to.toPath().resolve(from.toPath().relativize(p));
+                if (Files.isDirectory(p)) Files.createDirectories(t); else Files.copy(p, t);
+            }
+        }
+    }
+
+    static long dirBytes(File dir) throws IOException {
+        long sum = 0;
+        for (String sub : new String[]{"region", "entities", "poi"}) {
+            File[] fs = new File(dir, sub).listFiles();
+            if (fs != null) for (File f : fs) sum += f.length();
+        }
+        return sum;
+    }
+
+    /** What Chunky's trim with an inhabited-time filter does to the files (see its TrimCommand). */
+    static void simulateChunkyTrim(File dim, java.util.function.BiPredicate<Integer, Integer> keep) throws IOException {
+        File[] regions = new File(dim, "region").listFiles((d, n) -> n.matches("r\\.-?\\d+\\.-?\\d+\\.mca"));
+        for (File f : regions) {
+            String[] parts = f.getName().split("\\.");
+            int rx = Integer.parseInt(parts[1]), rz = Integer.parseInt(parts[2]);
+            boolean anyKept = false;
+            for (int i = 0; i < 1024 && !anyKept; i++) anyKept = keep.test(rx * 32 + (i & 31), rz * 32 + (i >>> 5));
+            if (!anyKept) {
+                for (String sub : new String[]{"region", "entities", "poi"}) new File(dim, sub + "/" + f.getName()).delete();
+                continue;
+            }
+            byte[] data = Files.readAllBytes(f.toPath());
+            if (data.length < 8192) continue;
+            for (int i = 0; i < 1024; i++) {
+                if (!keep.test(rx * 32 + (i & 31), rz * 32 + (i >>> 5))) {
+                    data[i * 4] = 0; data[i * 4 + 1] = 0; data[i * 4 + 2] = 0; data[i * 4 + 3] = 0;
+                }
+            }
+            Files.write(f.toPath(), data);
+        }
     }
 }

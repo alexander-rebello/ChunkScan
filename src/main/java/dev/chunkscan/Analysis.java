@@ -197,20 +197,70 @@ public final class Analysis {
         out.add("Circle radius: " + circleRadius + " blocks (farthest chunk " + circleFarX + "," + circleFarZ
                 + " ~ block " + (circleFarX * 16 + 8) + "," + (circleFarZ * 16 + 8) + ") -> "
                 + outsideCircle + " chunks outside (" + pct(outsideCircle, r.totalChunks) + ")");
-        if (sizes != null) out.add("  " + forecastLine(sizes, SizeForecast.Shape.circle(centerX, centerZ, circleRadius), worldBytes));
         out.add("Square radius: " + squareRadius + " blocks (farthest chunk " + squareFarX + "," + squareFarZ
                 + " ~ block " + (squareFarX * 16 + 8) + "," + (squareFarZ * 16 + 8) + ") -> "
                 + outsideSquare + " chunks outside (" + pct(outsideSquare, r.totalChunks) + ")");
-        if (sizes != null) out.add("  " + forecastLine(sizes, SizeForecast.Shape.square(centerX, centerZ, squareRadius), worldBytes));
         return out;
     }
 
-    private static String forecastLine(SizeForecast sizes, SizeForecast.Shape shape, long worldBytes) {
-        long after = sizes.forecast(shape);
-        long freed = sizes.dimensionBytes - after;
-        return "after trim: chunk data ~" + SizeForecast.human(after)
-                + (worldBytes >= 0 ? ", world folder ~" + SizeForecast.human(worldBytes - freed) : "")
-                + " (frees " + SizeForecast.human(freed) + ", " + sizes.deletedRegionFiles + " region files deleted)";
+    /**
+     * The two ways to trim, with forecasts and the exact Chunky commands.
+     * @param chunkyShape Chunky's current shape if the center came from its selection, else null
+     */
+    public List<String> trimOptions(RegionScanner.Result r, SizeForecast sizes, long worldBytes,
+                                    String world, String chunkyShape) {
+        List<String> out = new ArrayList<>();
+        if (qualifying == 0) return out;
+        boolean square = "square".equals(chunkyShape);
+        int radius = square ? squareRadius : circleRadius;
+        String shape = square ? "square" : "circle";
+        long t = thresholdTicks;
+
+        out.add("Option 1: keep everything within the " + shape + " radius " + radius
+                + " and delete what's outside (" + (square ? outsideSquare : outsideCircle) + " chunks)");
+        if (sizes != null) {
+            SizeForecast.Shape s = square ? SizeForecast.Shape.square(centerX, centerZ, radius)
+                    : SizeForecast.Shape.circle(centerX, centerZ, radius);
+            out.add("  " + outcomeLine(sizes, sizes.shapeOutcome(r, s), worldBytes));
+        }
+        List<String> steps = new ArrayList<>();
+        if (chunkyShape == null) {
+            steps.add("/chunky world " + world);
+            steps.add("/chunky center " + centerX + " " + centerZ);
+        }
+        if (chunkyShape == null || !(chunkyShape.equals("circle") || square)) steps.add("/chunky shape " + shape);
+        steps.add("/chunky radius " + radius);
+        steps.add("/chunky trim");
+        steps.add("/chunky confirm");
+        out.add("  " + numbered(steps));
+
+        long deleted = r.parsed - qualifying;
+        out.add("Option 2: delete every chunk with InhabitedTime <= " + TimeParse.format(t) + " anywhere, also inside the radius ("
+                + deleted + " chunks; they are generated again if someone goes there)");
+        if (sizes != null) out.add("  " + outcomeLine(sizes, sizes.inhabitedOutcome(r, t), worldBytes));
+        out.add("  " + numbered(java.util.Arrays.asList(
+                "/chunky trim " + world + " square " + centerX + " " + centerZ + " 0 0 outside " + t,
+                "/chunky confirm")));
+
+        out.add("Then optionally /chunkscan optimize " + world + " (repacks the remaining region files on the next start),"
+                + " and restart the server (Chunky requires a full restart after trimming). Make a backup first.");
+        return out;
+    }
+
+    private static String numbered(List<String> steps) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < steps.size(); i++) {
+            if (i > 0) sb.append("  ");
+            sb.append(i + 1).append(". ").append(steps.get(i));
+        }
+        return sb.toString();
+    }
+
+    private static String outcomeLine(SizeForecast sizes, SizeForecast.Outcome o, long worldBytes) {
+        long now = sizes.dimensionBytes;
+        return "chunk data " + SizeForecast.human(now) + " -> ~" + SizeForecast.human(o.afterTrim) + " after trim ("
+                + o.deletedRegions + " region files deleted), ~" + SizeForecast.human(o.afterOptimize) + " after optimize"
+                + (worldBytes >= 0 ? "; world folder ~" + SizeForecast.human(worldBytes - (now - o.afterOptimize)) : "");
     }
 
     static String pct(long part, long whole) {

@@ -26,8 +26,74 @@ public final class ChunkScanPlugin extends JavaPlugin implements Listener {
     /** Latest release if it is newer than the installed version, else null. */
     private volatile UpdateChecker.Release newerRelease;
 
+    private static final String PENDING = "optimize-pending.txt";
+
+    /** Runs before the worlds are loaded: the only safe moment to rewrite their region files. */
+    @Override
+    public void onLoad() {
+        File pending = new File(getDataFolder(), PENDING);
+        if (!pending.isFile()) return;
+        try {
+            List<String> dims = java.nio.file.Files.readAllLines(pending.toPath());
+            java.nio.file.Files.delete(pending.toPath()); // run once, even if something fails below
+            for (String path : dims) {
+                if (path.isBlank()) continue;
+                File dim = new File(path.trim());
+                getLogger().info("Optimizing region files of " + dim.getPath() + " before the world loads...");
+                long start = System.currentTimeMillis();
+                RegionOptimizer.Stats st = RegionOptimizer.optimizeDimension(dim, getLogger()::info);
+                getLogger().info("Done in " + (System.currentTimeMillis() - start) / 1000 + "s: "
+                        + SizeForecast.human(st.bytesBefore) + " -> " + SizeForecast.human(st.bytesAfter)
+                        + " (saved " + SizeForecast.human(st.bytesBefore - st.bytesAfter) + ", " + st.rewritten + " files repacked, "
+                        + st.deleted + " empty files deleted" + (st.skippedInvalid > 0 ? ", " + st.skippedInvalid + " skipped, see above" : "") + ")");
+            }
+        } catch (Exception e) {
+            getLogger().severe("Optimizing failed: " + e);
+        }
+    }
+
+    private boolean optimizeCommand(CommandSender sender, String[] args) {
+        File pending = new File(getDataFolder(), PENDING);
+        if (args.length == 2 && args[1].equalsIgnoreCase("cancel")) {
+            sender.sendMessage(P + (pending.delete() ? "Cancelled the scheduled optimization." : "Nothing was scheduled."));
+            return true;
+        }
+        if (args.length > 2) {
+            sender.sendMessage(P + "Usage: /chunkscan optimize [world] | /chunkscan optimize cancel");
+            return true;
+        }
+        World world = args.length == 2 ? Bukkit.getWorld(args[1]) : defaultWorld(sender);
+        if (world == null) {
+            sender.sendMessage(P + "§cWorld not found: " + args[1]);
+            return true;
+        }
+        File regionDir = regionDir(world);
+        if (regionDir == null) {
+            sender.sendMessage(P + "§cCould not find the region folder of " + world.getName());
+            return true;
+        }
+        String dim = regionDir.getParentFile().getAbsolutePath();
+        try {
+            getDataFolder().mkdirs();
+            List<String> lines = pending.isFile() ? new ArrayList<>(java.nio.file.Files.readAllLines(pending.toPath())) : new ArrayList<>();
+            if (!lines.contains(dim)) lines.add(dim);
+            java.nio.file.Files.write(pending.toPath(), lines);
+        } catch (java.io.IOException e) {
+            sender.sendMessage(P + "§cCould not schedule: " + e.getMessage());
+            return true;
+        }
+        sender.sendMessage(P + "§aScheduled: the region files of " + world.getName() + " are repacked on the next server start,"
+                + " before the world loads.");
+        sender.sendMessage(P + "Restart the server to run it (after a Chunky trim you need a restart anyway)."
+                + " Make a backup first. Cancel with /chunkscan optimize cancel.");
+        return true;
+    }
+
     @Override
     public void onEnable() {
+        if (new File(getDataFolder(), PENDING).isFile()) {
+            getLogger().warning("An optimization is scheduled; it runs on the next server start.");
+        }
         saveDefaultConfig();
         Bukkit.getPluginManager().registerEvents(this, this);
         if (getConfig().getBoolean("update-check", true)) {
@@ -49,6 +115,7 @@ public final class ChunkScanPlugin extends JavaPlugin implements Listener {
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] rawArgs) {
         if (rawArgs.length == 1 && rawArgs[0].equalsIgnoreCase("version")) return versionCommand(sender);
+        if (rawArgs.length >= 1 && rawArgs[0].equalsIgnoreCase("optimize")) return optimizeCommand(sender, rawArgs);
         boolean export = hasFlag(rawArgs);
         String[] args = stripFlag(rawArgs);
         if (!TimeParse.startsWithTime(args)) { // minTime is optional and defaults to 0
@@ -218,11 +285,12 @@ public final class ChunkScanPlugin extends JavaPlugin implements Listener {
                 SizeForecast sizes = SizeForecast.measure(regionDir.getParentFile());
                 long worldBytes = SizeForecast.folderBytes(fworld.getWorldFolder());
                 List<String> lines = a.summary(r, sizes, worldBytes);
+                List<String> options = a.trimOptions(r, sizes, worldBytes, fworld.getName(), fshape);
                 final long rows = exportedRows;
                 Bukkit.getScheduler().runTask(this, () -> {
                     sender.sendMessage(P + "§aDone in " + secs + "s.");
                     for (String l : lines) sender.sendMessage(P + l);
-                    if (a.qualifying > 0) suggestChunky(sender, a, fworld.getName(), fcx, fcz, fshape);
+                    for (String l : options) sender.sendMessage(P + "§e" + l);
                     sender.sendMessage(P + "Files in plugins/" + dir.getName() + "/: " + png.getName() + ", " + csv.getName()
                             + (export ? ", " + exportFile.getName() + " (" + rows + " chunks, "
                             + mb(exportFile.length()) + ")" : ""));
@@ -279,25 +347,6 @@ public final class ChunkScanPlugin extends JavaPlugin implements Listener {
         }
     }
 
-    private void suggestChunky(CommandSender sender, Analysis a, String world, int cx, int cz, String chunkyShape) {
-        List<String> steps = new ArrayList<>();
-        if (chunkyShape != null && (chunkyShape.equals("circle") || chunkyShape.equals("square"))) {
-            // world, center and shape already match Chunky's selection; only the radius has to be set
-            steps.add("/chunky radius " + (chunkyShape.equals("circle") ? a.circleRadius : a.squareRadius));
-        } else {
-            if (chunkyShape == null) {
-                steps.add("/chunky world " + world);
-                steps.add("/chunky center " + cx + " " + cz);
-            }
-            steps.add("/chunky shape circle");
-            steps.add("/chunky radius " + a.circleRadius);
-        }
-        steps.add("/chunky trim");
-        steps.add("/chunky confirm");
-        sender.sendMessage(P + "§eTo delete everything outside that radius (make a backup first):");
-        for (int i = 0; i < steps.size(); i++) sender.sendMessage(P + "§e  " + (i + 1) + ". " + steps.get(i));
-        sender.sendMessage(P + "§e  " + (steps.size() + 1) + ". Restart the server (Chunky requires a full restart after trimming).");
-    }
 
     private boolean usage(CommandSender sender, String label) {
         sender.sendMessage(P + "Usage: /" + label + " [minTime] [chunky | spawn [world] | origin [world] | here | <x> <z> [world]] [--export]");
@@ -306,6 +355,7 @@ public final class ChunkScanPlugin extends JavaPlugin implements Listener {
         sender.sendMessage(P + "Without a center, Chunky's selection is used (else your position / spawn).");
         sender.sendMessage(P + "--export also writes a CSV listing every generated chunk with its details.");
         sender.sendMessage(P + "/" + label + " version shows the installed version and checks for updates.");
+        sender.sendMessage(P + "/" + label + " optimize [world] repacks region files on the next server start (frees space after a trim).");
         return true;
     }
 
@@ -334,6 +384,13 @@ public final class ChunkScanPlugin extends JavaPlugin implements Listener {
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] rawArgs) {
         List<String> options = new ArrayList<>();
         if (rawArgs.length == 0) return options;
+        if (rawArgs.length == 2 && rawArgs[0].equalsIgnoreCase("optimize")) {
+            options.add("cancel");
+            for (World w : Bukkit.getWorlds()) options.add(w.getName());
+            String pre = rawArgs[1].toLowerCase(Locale.ROOT);
+            options.removeIf(o -> !o.toLowerCase(Locale.ROOT).startsWith(pre));
+            return options;
+        }
         // complete as if --export weren't there (it may appear anywhere after minTime)
         String[] earlier = stripFlag(Arrays.copyOf(rawArgs, rawArgs.length - 1));
         if (earlier.length > 0 && !TimeParse.startsWithTime(earlier)) { // complete as if minTime 0 had been typed
@@ -346,7 +403,7 @@ public final class ChunkScanPlugin extends JavaPlugin implements Listener {
         args[args.length - 1] = rawArgs[rawArgs.length - 1];
         if (args.length >= 2 && !hasFlag(rawArgs)) options.add(EXPORT_FLAG);
         if (args.length == 1) {
-            options.addAll(Arrays.asList("30s", "1m", "5m", "30m", "1h", "chunky", "spawn", "origin", "here", "version"));
+            options.addAll(Arrays.asList("30s", "1m", "5m", "30m", "1h", "chunky", "spawn", "origin", "here", "version", "optimize"));
         } else if (args.length == 2) {
             options.addAll(Arrays.asList("chunky", "spawn", "origin", "here"));
             if (sender instanceof Player) options.add(String.valueOf(((Player) sender).getLocation().getBlockX()));

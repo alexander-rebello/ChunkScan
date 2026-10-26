@@ -31,8 +31,13 @@ public final class RegionScanner {
     public static final class Region {
         public final int rx, rz;
         public final long[] present = new long[16]; // 1024 bits
+        /** 4 KiB sectors each chunk occupies in the region file (from the header), 0 if absent. */
+        public final byte[] sectors = new byte[1024];
+        public long fileLength;
 
         Region(int rx, int rz) { this.rx = rx; this.rz = rz; }
+
+        public int sectors(int i) { return sectors[i] & 0xFF; }
 
         boolean has(int i) { return (present[i >>> 6] & (1L << (i & 63))) != 0; }
         void set(int i) { present[i >>> 6] |= 1L << (i & 63); }
@@ -152,6 +157,7 @@ public final class RegionScanner {
             result.addRegion(region, new int[0], new int[0], new long[0], 0, 0, 0, 1, 0);
             return;
         }
+        region.fileLength = data.length;
         if (data.length < 8192) { // empty / brand new region file
             result.addRegion(region, new int[0], new int[0], new long[0], 0, 0, 0, 0, 0);
             return;
@@ -220,6 +226,7 @@ public final class RegionScanner {
 
             total++;
             region.set(i);
+            region.sectors[i] = (byte) sectors;
 
             if (type == 4) { // LZ4 needs an extra library; rare (non-default setting)
                 lz4++;

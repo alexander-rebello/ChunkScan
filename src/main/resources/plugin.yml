@@ -7,7 +7,7 @@ description: Reads InhabitedTime of all generated chunks and finds the smallest 
 commands:
   chunkscan:
     description: Scan InhabitedTime of all chunks in a world.
-    usage: /chunkscan <minTime> [chunky | spawn [world] | origin [world] | here | <x> <z> [world]] [--export] | /chunkscan version
+    usage: /chunkscan [minTime] [chunky | spawn [world] | origin [world] | here | <x> <z> [world]] [--export] | /chunkscan version | /chunkscan optimize [world|cancel]
     permission: chunkscan.use
 permissions:
   chunkscan.use:

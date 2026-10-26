@@ -12,6 +12,7 @@ spent more than a given time in. Meant for cleaning up worlds that were pre-gene
 ```
 /chunkscan [minTime] [chunky | spawn [world] | origin [world] | here | <x> <z> [world]] [--export]
 /chunkscan version
+/chunkscan optimize [world | cancel]
 ```
 
 - `minTime`: `30s`, `5m`, `1h`, `600t` (ticks); a plain number means seconds. Chunks need an InhabitedTime
@@ -30,6 +31,8 @@ spent more than a given time in. Meant for cleaning up worlds that were pre-gene
 - `--export` (anywhere after `minTime`): also write a CSV with every generated chunk, see below.
 
 `/chunkscan version` shows the installed version and checks GitHub for a newer release.
+
+`/chunkscan optimize [world]` schedules repacking the world's region files, see [Optimize](#optimize).
 
 Tab completion suggests the options.
 
@@ -67,12 +70,18 @@ In chat:
 - smallest circle and square radius (in blocks) that fully contain every visited chunk, the chunk that defines it,
   and how many chunks would be outside
 - the current size of the world folder and of the dimension's chunk data (`region/`, `entities/`, `poi/`)
-- for each radius, the expected size after trimming
-- the steps to trim: `/chunky radius …`, `/chunky trim`, `/chunky confirm`, then a server restart
+- two ways to trim with Chunky, each with the expected size after the trim and after `/chunkscan optimize`,
+  and the exact commands:
+  1. **Radius:** keep everything within the suggested radius, delete what's outside
+     (`/chunky radius …`, `/chunky trim`, `/chunky confirm`).
+  2. **Inhabited time:** delete every chunk with InhabitedTime at or below `minTime`, anywhere, also inside the
+     radius (`/chunky trim <world> square <x> <z> 0 0 outside <ticks>`, `/chunky confirm`). Deleted chunks are
+     generated again when someone comes near them. This trim also sets Chunky's selection to radius 0.
+- a reminder that the server must be restarted after a trim (Chunky requires it)
 
-The forecast follows how Chunky trims: a region file (with its `poi`/`entities` files) is deleted only when
-every chunk center in it lies outside the shape. Region files on the border lose chunks but keep their size,
-so the space is freed by the regions that lie completely outside.
+The forecast follows how Chunky trims: a region file (with its `poi`/`entities` files) is deleted only when it
+keeps no chunk at all. Region files that keep some chunks only lose entries in their header and stay the same
+size until they are repacked with `/chunkscan optimize`.
 
 In `plugins/ChunkScan/`:
 - `<world>-<time>.png` – heatmap, one pixel per chunk, north up. Dark gray: generated but never visited,
@@ -102,6 +111,23 @@ In `plugins/ChunkScan/`:
 Rows are grouped by region file, not sorted. The export reads every chunk completely, so it is slower than a
 normal scan, and it gets big: roughly 100 bytes per chunk (a 10,000 block radius is about 1.2 million chunks,
 ~120 MB). Excel only opens the first 1,048,576 rows; LibreOffice, DuckDB or Python handle more.
+
+## Optimize
+
+A region file holds 32×32 chunks in 4 KiB sectors, with a table at the start that points to each chunk.
+Deleting a chunk (e.g. with `/chunky trim`) only clears its table entry; the file keeps its size.
+`/chunkscan optimize [world]` repacks the files in `region/`, `entities/` and `poi/` so that only the remaining
+chunks are stored, one after another:
+
+- Chunk data is copied byte for byte (never decompressed or changed), and every new file is compared with the
+  original before it replaces it.
+- Files without chunks are deleted. Files with an invalid table entry are left untouched and reported.
+- Rewriting region files is only safe while the world isn't loaded, so the command only schedules the job. It
+  runs on the next server start, before the worlds load, with progress in the console.
+  `/chunkscan optimize cancel` removes the scheduled job.
+
+Typical order: trim with Chunky → `/chunkscan optimize` → restart (Chunky requires the restart anyway).
+Make a backup first.
 
 ## Notes
 

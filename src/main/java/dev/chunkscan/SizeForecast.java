@@ -41,6 +41,8 @@ public final class SizeForecast {
     private final Map<Long, Long> bytesPerRegion = new HashMap<>();
     /** Regions that have a file in region/ (only those are trimmed by Chunky). */
     private final java.util.Set<Long> trimmable = new java.util.HashSet<>();
+    /** Size of just region/r.x.z.mca per region. */
+    private final Map<Long, Long> regionFileBytes = new HashMap<>();
     public long dimensionBytes; // region + entities + poi, current
 
     public long afterBytes;      // filled by forecast()
@@ -63,7 +65,10 @@ public final class SizeForecast {
                 long key;
                 if (r.matches()) {
                     key = key(Integer.parseInt(r.group(1)), Integer.parseInt(r.group(2)));
-                    if (folder.equals("region")) f.trimmable.add(key);
+                    if (folder.equals("region")) {
+                        f.trimmable.add(key);
+                        f.regionFileBytes.put(key, size);
+                    }
                 } else if (c.matches()) {
                     key = key(Math.floorDiv(Integer.parseInt(c.group(1)), 32), Math.floorDiv(Integer.parseInt(c.group(2)), 32));
                 } else {
@@ -88,6 +93,72 @@ public final class SizeForecast {
         afterBytes = dimensionBytes - freed;
         deletedRegionFiles = deleted;
         return afterBytes;
+    }
+
+    /** Expected sizes for one way of trimming. */
+    public static final class Outcome {
+        public long afterTrim;       // chunk data after Chunky's trim
+        public long afterOptimize;   // chunk data after trim + /chunkscan optimize (region files repacked)
+        public long deletedRegions;  // region files Chunky deletes completely
+    }
+
+    /** Decides per chunk whether it survives a trim. */
+    public interface ChunkKeep {
+        boolean keep(int chunkX, int chunkZ);
+    }
+
+    /**
+     * Forecast for a trim that keeps the chunks matching {@code keep}.
+     * @param regionGone Chunky's rule for deleting a whole region (with its poi/entities files)
+     *
+     * Optimized size counts only region/ files (header + sectors of kept chunks); entities/ and poi/ files of
+     * kept regions are counted at their current size, so the optimize figure is a little conservative.
+     */
+    public Outcome outcome(RegionScanner.Result r, ChunkKeep keep, java.util.function.BiPredicate<Integer, Integer> regionGone) {
+        Map<Long, RegionScanner.Region> scanned = new HashMap<>();
+        for (RegionScanner.Region reg : r.regions) scanned.put(key(reg.rx, reg.rz), reg);
+        Outcome o = new Outcome();
+        long freed = 0, optimizeSaves = 0;
+        for (long key : trimmable) {
+            int rx = (int) (key >> 32), rz = (int) key;
+            if (regionGone.test(rx, rz)) {
+                freed += bytesPerRegion.getOrDefault(key, 0L);
+                o.deletedRegions++;
+                continue;
+            }
+            RegionScanner.Region reg = scanned.get(key);
+            long current = regionFileBytes.getOrDefault(key, 0L);
+            if (reg == null) continue;
+            long sectors = 0;
+            for (int i = 0; i < 1024; i++) {
+                if (reg.has(i) && keep.keep(rx * 32 + (i & 31), rz * 32 + (i >>> 5))) sectors += reg.sectors(i);
+            }
+            long packed = sectors == 0 ? 0 : 8192 + sectors * 4096;
+            if (packed < current) optimizeSaves += current - packed;
+        }
+        o.afterTrim = dimensionBytes - freed;
+        o.afterOptimize = o.afterTrim - optimizeSaves;
+        return o;
+    }
+
+    /** Trim outside a shape (Chunky's radius trim). */
+    public Outcome shapeOutcome(RegionScanner.Result r, Shape shape) {
+        return outcome(r, (x, z) -> shape.contains((x << 4) + 8, (z << 4) + 8), (rx, rz) -> fullyOutside(rx, rz, shape));
+    }
+
+    /**
+     * Trim of every chunk with InhabitedTime <= threshold (Chunky's trim with an inhabited-time filter):
+     * a region file is deleted when none of its chunks is above the threshold.
+     */
+    public Outcome inhabitedOutcome(RegionScanner.Result r, long thresholdTicks) {
+        java.util.Set<Long> above = new java.util.HashSet<>();
+        java.util.Set<Long> regionsWithAbove = new java.util.HashSet<>();
+        for (int i = 0; i < r.visitedCount; i++) {
+            if (r.visitedTicks[i] <= thresholdTicks) continue;
+            above.add(key(r.visitedX[i], r.visitedZ[i]));
+            regionsWithAbove.add(key(Math.floorDiv(r.visitedX[i], 32), Math.floorDiv(r.visitedZ[i], 32)));
+        }
+        return outcome(r, (x, z) -> above.contains(key(x, z)), (rx, rz) -> !regionsWithAbove.contains(key(rx, rz)));
     }
 
     /** Same test as Chunky: a region goes only if no chunk center in it is inside the shape. */
