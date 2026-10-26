@@ -1,10 +1,7 @@
-# Pause running Chunky generation tasks while a scan runs. They are continued when the scan is done.
+# Pause Chunky while a scan runs, so no region files change while they are read.
+# If another plugin (e.g. ChunkyAutoPause) continues Chunky during the scan, it is paused again within a second.
+# Everything paused this way is continued when the scan is done.
 pause-chunky: true
-
-# Plugins that resume Chunky on their own (for example when the server is empty).
-# They are disabled while a scan runs and enabled again afterwards.
-suspend-plugins:
-  - ChunkyAutoPause
 
 # Check GitHub for a newer ChunkScan release on startup and tell ops (chunkscan.use) when they join.
 update-check: true

@@ -163,8 +163,7 @@ public final class ChunkScanPlugin extends JavaPlugin implements Listener {
         sender.sendMessage(P + "§eCenter: X " + cx + ", Z " + cz + " in " + world.getName() + "§r (" + source + ")");
 
         // keep Chunky from changing region files while they are read
-        final ScanGuard guard = ScanGuard.begin(sender, getConfig().getBoolean("pause-chunky", true),
-                getConfig().getStringList("suspend-plugins"));
+        final ScanGuard guard = ScanGuard.begin(this, sender, getConfig().getBoolean("pause-chunky", true));
 
         // flush loaded chunks so the files contain current InhabitedTime values
         sender.sendMessage(P + "Saving " + world.getName() + "...");

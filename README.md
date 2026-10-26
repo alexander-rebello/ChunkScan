@@ -39,20 +39,15 @@ The world is saved first so loaded chunks are included, and the center that was 
 
 ### Chunky during a scan
 
-So that no region files change while they are read, a scan:
-
-1. disables the plugins listed in `suspend-plugins` (default: `ChunkyAutoPause`), which would otherwise continue
-   Chunky on their own,
-2. pauses every running Chunky task (`pause-chunky: true`),
-
-and after the scan continues those tasks and enables the plugins again.
+So that no region files change while they are read, a scan pauses every running Chunky task
+(`pause-chunky: true`). If another plugin continues Chunky during the scan (for example ChunkyAutoPause's idle
+watcher), ChunkScan pauses it again within a second. When the scan is done, every task paused this way is
+continued. Other plugins are never disabled.
 
 `plugins/ChunkScan/config.yml`:
 
 ```yaml
 pause-chunky: true
-suspend-plugins:
-  - ChunkyAutoPause
 update-check: true
 ```
 
