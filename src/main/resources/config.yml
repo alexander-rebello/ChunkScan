@@ -5,3 +5,6 @@ pause-chunky: true
 # They are disabled while a scan runs and enabled again afterwards.
 suspend-plugins:
   - ChunkyAutoPause
+
+# Check GitHub for a newer ChunkScan release on startup and tell ops (chunkscan.use) when they join.
+update-check: true

@@ -9,6 +9,7 @@ spent more than a given time in. Meant for cleaning up worlds that were pre-gene
 
 ```
 /chunkscan <minTime> [chunky | spawn [world] | origin [world] | here | <x> <z> [world]] [--export]
+/chunkscan version
 ```
 
 - `minTime`: `30s`, `5m`, `1h`, `600t` (ticks); a plain number means seconds. Chunks need an InhabitedTime
@@ -24,6 +25,8 @@ spent more than a given time in. Meant for cleaning up worlds that were pre-gene
   Without a world, the world you're in is used (the main world from the console).
 
 - `--export` (anywhere after `minTime`): also write a CSV with every generated chunk, see below.
+
+`/chunkscan version` shows the installed version and checks GitHub for a newer release.
 
 Tab completion suggests the options.
 
@@ -48,7 +51,13 @@ and after the scan continues those tasks and enables the plugins again.
 pause-chunky: true
 suspend-plugins:
   - ChunkyAutoPause
+update-check: true
 ```
+
+### Update check
+
+With `update-check: true`, ChunkScan asks GitHub for the latest release on startup. If it is newer than the
+installed version, it logs a warning and tells players with `chunkscan.use` when they join.
 
 ## Output
 

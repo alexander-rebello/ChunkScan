@@ -14,20 +14,41 @@ import org.bukkit.World;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 
-public final class ChunkScanPlugin extends JavaPlugin {
+public final class ChunkScanPlugin extends JavaPlugin implements Listener {
 
     private static final String P = "§6[ChunkScan] §r";
     private final AtomicBoolean running = new AtomicBoolean(false);
+    /** Latest release if it is newer than the installed version, else null. */
+    private volatile UpdateChecker.Release newerRelease;
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
+        Bukkit.getPluginManager().registerEvents(this, this);
+        if (getConfig().getBoolean("update-check", true)) {
+            Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+                try {
+                    UpdateChecker.Release latest = UpdateChecker.fetchLatest(version());
+                    if (UpdateChecker.compare(latest.version, version()) > 0) {
+                        newerRelease = latest;
+                        getLogger().warning("A new version is available: " + latest.version
+                                + " (installed: " + version() + "). Download: " + latest.url);
+                    }
+                } catch (Exception e) {
+                    getLogger().info("Could not check for updates: " + e.getMessage());
+                }
+            });
+        }
     }
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] rawArgs) {
+        if (rawArgs.length == 1 && rawArgs[0].equalsIgnoreCase("version")) return versionCommand(sender);
         boolean export = hasFlag(rawArgs);
         String[] args = stripFlag(rawArgs);
         if (args.length < 1 || args.length > 4) return usage(sender, label);
@@ -212,6 +233,42 @@ public final class ChunkScanPlugin extends JavaPlugin {
         return true;
     }
 
+    private String version() {
+        return getDescription().getVersion();
+    }
+
+    private boolean versionCommand(CommandSender sender) {
+        sender.sendMessage(P + "ChunkScan " + version() + " - https://github.com/" + UpdateChecker.REPO);
+        sender.sendMessage(P + "§7Checking for updates...");
+        Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+            String msg;
+            try {
+                UpdateChecker.Release latest = UpdateChecker.fetchLatest(version());
+                if (UpdateChecker.compare(latest.version, version()) > 0) {
+                    newerRelease = latest;
+                    msg = "§eNew version " + latest.version + " available: " + latest.url;
+                } else {
+                    newerRelease = null;
+                    msg = "§aYou are running the latest version.";
+                }
+            } catch (Exception e) {
+                msg = "§cCould not check for updates: " + e.getMessage();
+            }
+            tell(sender, P + msg);
+        });
+        return true;
+    }
+
+    @EventHandler
+    public void onJoin(PlayerJoinEvent event) {
+        UpdateChecker.Release r = newerRelease;
+        Player p = event.getPlayer();
+        if (r != null && p.hasPermission("chunkscan.use")) {
+            p.sendMessage(P + "§eA new ChunkScan version is available: " + r.version
+                    + " (installed: " + version() + "). " + r.url);
+        }
+    }
+
     private void suggestChunky(CommandSender sender, Analysis a, String world, int cx, int cz, String chunkyShape) {
         if (chunkyShape != null) {
             // center/world already match Chunky; only the radius has to be set
@@ -236,6 +293,7 @@ public final class ChunkScanPlugin extends JavaPlugin {
         sender.sendMessage(P + "Center: chunky = Chunky's selection, spawn = world spawn, origin = 0 0, here = your position.");
         sender.sendMessage(P + "Without a center, Chunky's selection is used (else your position / spawn).");
         sender.sendMessage(P + "--export also writes a CSV listing every generated chunk with its details.");
+        sender.sendMessage(P + "/" + label + " version shows the installed version and checks for updates.");
         return true;
     }
 
@@ -270,7 +328,7 @@ public final class ChunkScanPlugin extends JavaPlugin {
         args[args.length - 1] = rawArgs[rawArgs.length - 1];
         if (args.length >= 2 && !hasFlag(rawArgs)) options.add(EXPORT_FLAG);
         if (args.length == 1) {
-            options.addAll(Arrays.asList("30s", "1m", "5m", "30m", "1h"));
+            options.addAll(Arrays.asList("30s", "1m", "5m", "30m", "1h", "version"));
         } else if (args.length == 2) {
             options.addAll(Arrays.asList("chunky", "spawn", "origin", "here"));
             if (sender instanceof Player) options.add(String.valueOf(((Player) sender).getLocation().getBlockX()));

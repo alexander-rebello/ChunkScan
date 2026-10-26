@@ -149,6 +149,13 @@ public class RegionScannerCheck {
                 && TimeParse.toTicks("2") == 40 && TimeParse.toTicks("1h") == 72000
                 && TimeParse.format(1200).equals("1m") && TimeParse.format(700).equals("35s"), "time parsing");
 
+        // update checker: version comparison and GitHub response parsing
+        check(UpdateChecker.compare("1.10.0", "1.9.3") > 0 && UpdateChecker.compare("v1.3.0", "1.3.0") == 0
+                && UpdateChecker.compare("1.3", "1.3.0") == 0 && UpdateChecker.compare("1.4.0-beta", "1.4.0") < 0
+                && UpdateChecker.compare("1.3.0", "1.3.1") < 0, "version compare");
+        UpdateChecker.Release rel = UpdateChecker.parse("{\"url\":\"https://api.github.com/x\",\"html_url\":\"https://github.com/a/b/releases/tag/v1.4.0\",\"tag_name\":\"v1.4.0\",\"name\":\"x\"}");
+        check(rel.version.equals("1.4.0") && rel.url.equals("https://github.com/a/b/releases/tag/v1.4.0"), "release parse");
+
         File out = new File(args[1]);
         out.mkdirs();
         Analysis.writeCsv(r, new File(out, "test.csv"));
