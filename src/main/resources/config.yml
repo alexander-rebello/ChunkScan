@@ -1,0 +1,7 @@
+# Pause running Chunky generation tasks while a scan runs. They are continued when the scan is done.
+pause-chunky: true
+
+# Plugins that resume Chunky on their own (for example when the server is empty).
+# They are disabled while a scan runs and enabled again afterwards.
+suspend-plugins:
+  - ChunkyAutoPause

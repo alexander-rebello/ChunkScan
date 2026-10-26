@@ -1,6 +1,9 @@
 package dev.chunkscan;
 
 import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import org.bukkit.Bukkit;
 import org.bukkit.plugin.Plugin;
 
@@ -48,6 +51,52 @@ final class ChunkyBridge {
         } catch (Throwable t) {
             return null;
         }
+    }
+
+    /**
+     * Worlds in which Chunky is currently generating (keys of Chunky#getGenerationTasks()).
+     * @return the world names, or null if Chunky is missing/disabled or its internals changed
+     */
+    static List<String> runningWorlds() {
+        try {
+            Object chunky = chunky();
+            if (chunky == null) return null;
+            Map<?, ?> tasks = (Map<?, ?>) call(chunky, "getGenerationTasks");
+            List<String> worlds = new ArrayList<>();
+            for (Object k : tasks.keySet()) worlds.add(String.valueOf(k));
+            return worlds;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** Pauses the task in a world (Chunky saves its progress). Main thread only. */
+    static boolean pause(String world) {
+        return api("pauseTask", world);
+    }
+
+    /** Continues a paused task in a world. Main thread only. */
+    static boolean resume(String world) {
+        return api("continueTask", world);
+    }
+
+    /** Calls a ChunkyAPI method (public API, registered by Chunky as a service). */
+    private static boolean api(String method, String world) {
+        try {
+            Object chunky = chunky();
+            if (chunky == null) return false;
+            Object api = call(chunky, "getApi");
+            Class<?> iface = Class.forName("org.popcraft.chunky.api.ChunkyAPI", true, api.getClass().getClassLoader());
+            return (Boolean) iface.getMethod(method, String.class).invoke(api, world);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private static Object chunky() throws ReflectiveOperationException {
+        Plugin plugin = Bukkit.getPluginManager().getPlugin("Chunky");
+        if (plugin == null || !plugin.isEnabled()) return null;
+        return call(plugin, "getChunky");
     }
 
     private static Object call(Object target, String method) throws ReflectiveOperationException {

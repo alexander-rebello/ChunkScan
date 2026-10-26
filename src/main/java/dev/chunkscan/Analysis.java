@@ -181,7 +181,7 @@ public final class Analysis {
         }
         out.add("Chunks with InhabitedTime > " + TimeParse.format(thresholdTicks) + ": " + qualifying);
         if (qualifying == 0) return out;
-        out.add("Center: " + centerX + ", " + centerZ);
+        out.add("Center: X " + centerX + ", Z " + centerZ);
         out.add("Circle radius: " + circleRadius + " blocks (farthest chunk " + circleFarX + "," + circleFarZ
                 + " ~ block " + (circleFarX * 16 + 8) + "," + (circleFarZ * 16 + 8) + ") -> "
                 + outsideCircle + " chunks outside (" + pct(outsideCircle, r.totalChunks) + ")");

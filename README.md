@@ -30,7 +30,25 @@ Tab completion suggests the options.
 Permission: `chunkscan.use` (op by default).
 
 The scan uses every CPU core and is built for maintenance windows: run it when nobody is online.
-The world is saved first so loaded chunks are included.
+The world is saved first so loaded chunks are included, and the center that was used is printed at the start.
+
+### Chunky during a scan
+
+So that no region files change while they are read, a scan:
+
+1. disables the plugins listed in `suspend-plugins` (default: `ChunkyAutoPause`), which would otherwise continue
+   Chunky on their own,
+2. pauses every running Chunky task (`pause-chunky: true`),
+
+and after the scan continues those tasks and enables the plugins again.
+
+`plugins/ChunkScan/config.yml`:
+
+```yaml
+pause-chunky: true
+suspend-plugins:
+  - ChunkyAutoPause
+```
 
 ## Output
 

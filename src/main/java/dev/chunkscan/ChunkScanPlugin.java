@@ -22,6 +22,11 @@ public final class ChunkScanPlugin extends JavaPlugin {
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     @Override
+    public void onEnable() {
+        saveDefaultConfig();
+    }
+
+    @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] rawArgs) {
         boolean export = hasFlag(rawArgs);
         String[] args = stripFlag(rawArgs);
@@ -134,6 +139,11 @@ public final class ChunkScanPlugin extends JavaPlugin {
             sender.sendMessage(P + "§cA scan is already running.");
             return true;
         }
+        sender.sendMessage(P + "§eCenter: X " + cx + ", Z " + cz + " in " + world.getName() + "§r (" + source + ")");
+
+        // keep Chunky from changing region files while they are read
+        final ScanGuard guard = ScanGuard.begin(sender, getConfig().getBoolean("pause-chunky", true),
+                getConfig().getStringList("suspend-plugins"));
 
         // flush loaded chunks so the files contain current InhabitedTime values
         sender.sendMessage(P + "Saving " + world.getName() + "...");
@@ -141,7 +151,6 @@ public final class ChunkScanPlugin extends JavaPlugin {
 
         int threads = Math.max(1, Runtime.getRuntime().availableProcessors());
         int regionCount = RegionScanner.listRegionFiles(regionDir).length;
-        sender.sendMessage(P + "Center " + cx + ", " + cz + " in " + world.getName() + " from " + source + ".");
         sender.sendMessage(P + "Scanning " + regionCount + " region files on " + threads
                 + " threads, min time " + TimeParse.format(thresholdTicks)
                 + (export ? ", exporting every chunk" : "") + ". The server may lag until this finishes.");
@@ -192,6 +201,11 @@ public final class ChunkScanPlugin extends JavaPlugin {
                 t.printStackTrace();
                 tell(sender, P + "§cScan failed: " + t.getMessage());
             } finally {
+                try {
+                    Bukkit.getScheduler().runTask(this, () -> guard.end(sender));
+                } catch (Throwable ignored) {
+                    // plugin is being disabled (server stopping); Chunky saves its own tasks then
+                }
                 running.set(false);
             }
         });
