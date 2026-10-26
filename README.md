@@ -1,3 +1,5 @@
+<img src="icon.png" alt="ChunkScan icon" width="128" align="right">
+
 # ChunkScan
 
 Paper/Spigot plugin that reads the `InhabitedTime` of every generated chunk straight from the region files
