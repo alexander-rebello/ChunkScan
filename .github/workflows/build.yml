@@ -5,13 +5,16 @@ on:
     branches: [master]
   workflow_dispatch:
 
+permissions:
+  contents: write # needed to create releases
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
@@ -24,8 +27,33 @@ jobs:
         run: java -Djava.awt.headless=true -cp target/classes:target/test-classes dev.chunkscan.RegionScannerCheck target/check-world target/check-out
 
       - name: Upload jar
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ChunkScan-build-${{ github.run_number }}
           path: target/ChunkScan-*.jar
           if-no-files-found: error
+
+      - name: Check whether this version is already released
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(mvn -B -q help:evaluate -Dexpression=project.version -DforceStdout)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if gh release view "v$version" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::v$version is already released. Bump the version in pom.xml to publish a new release."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create release
+        if: steps.version.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: ChunkScan ${{ steps.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          files: target/ChunkScan-*.jar
+          fail_on_unmatched_files: true
+          generate_release_notes: true

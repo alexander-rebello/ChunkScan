@@ -59,3 +59,6 @@ mvn package
 
 The jar ends up in `target/`. GitHub Actions builds it on every push to `master` (or manually via "Run workflow");
 download it from the run's artifacts. Pushes to `dev` are not built.
+
+When the version in `pom.xml` has no release yet, the master build also publishes a GitHub release
+(`v<version>`) with the jar attached. Bump the version to publish the next one.
