@@ -171,10 +171,22 @@ public final class Analysis {
 
     /** Human readable summary lines (plain text, the plugin adds colors). */
     public List<String> summary(RegionScanner.Result r) {
+        return summary(r, null, -1);
+    }
+
+    /**
+     * @param sizes      region/entities/poi sizes of the scanned dimension, or null to skip the forecast
+     * @param worldBytes size of the whole world folder, or -1 if unknown
+     */
+    public List<String> summary(RegionScanner.Result r, SizeForecast sizes, long worldBytes) {
         List<String> out = new ArrayList<>();
         out.add("Generated chunks: " + r.totalChunks + " in " + r.regions.size() + " region files"
                 + (r.unreadable > 0 ? " (" + r.unreadable + " unreadable)" : "")
                 + (r.lz4Skipped > 0 ? " (" + r.lz4Skipped + " LZ4-compressed, skipped)" : ""));
+        if (sizes != null) {
+            out.add("Current size: " + (worldBytes >= 0 ? "world folder " + SizeForecast.human(worldBytes) + ", " : "")
+                    + "chunk data (region/entities/poi) " + SizeForecast.human(sizes.dimensionBytes));
+        }
         out.add("InhabitedTime distribution:");
         for (int b = 0; b < bucketCounts.length; b++) {
             if (bucketCounts[b] > 0) out.add("  " + BUCKET_NAMES[b] + ": " + bucketCounts[b]);
@@ -185,10 +197,20 @@ public final class Analysis {
         out.add("Circle radius: " + circleRadius + " blocks (farthest chunk " + circleFarX + "," + circleFarZ
                 + " ~ block " + (circleFarX * 16 + 8) + "," + (circleFarZ * 16 + 8) + ") -> "
                 + outsideCircle + " chunks outside (" + pct(outsideCircle, r.totalChunks) + ")");
+        if (sizes != null) out.add("  " + forecastLine(sizes, SizeForecast.Shape.circle(centerX, centerZ, circleRadius), worldBytes));
         out.add("Square radius: " + squareRadius + " blocks (farthest chunk " + squareFarX + "," + squareFarZ
                 + " ~ block " + (squareFarX * 16 + 8) + "," + (squareFarZ * 16 + 8) + ") -> "
                 + outsideSquare + " chunks outside (" + pct(outsideSquare, r.totalChunks) + ")");
+        if (sizes != null) out.add("  " + forecastLine(sizes, SizeForecast.Shape.square(centerX, centerZ, squareRadius), worldBytes));
         return out;
+    }
+
+    private static String forecastLine(SizeForecast sizes, SizeForecast.Shape shape, long worldBytes) {
+        long after = sizes.forecast(shape);
+        long freed = sizes.dimensionBytes - after;
+        return "after trim: chunk data ~" + SizeForecast.human(after)
+                + (worldBytes >= 0 ? ", world folder ~" + SizeForecast.human(worldBytes - freed) : "")
+                + " (frees " + SizeForecast.human(freed) + ", " + sizes.deletedRegionFiles + " region files deleted)";
     }
 
     static String pct(long part, long whole) {

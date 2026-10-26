@@ -10,12 +10,13 @@ spent more than a given time in. Meant for cleaning up worlds that were pre-gene
 ## Usage
 
 ```
-/chunkscan <minTime> [chunky | spawn [world] | origin [world] | here | <x> <z> [world]] [--export]
+/chunkscan [minTime] [chunky | spawn [world] | origin [world] | here | <x> <z> [world]] [--export]
 /chunkscan version
 ```
 
 - `minTime`: `30s`, `5m`, `1h`, `600t` (ticks); a plain number means seconds. Chunks need an InhabitedTime
-  strictly above this to count as visited.
+  strictly above this to count as visited. Optional, default `0` (every chunk a player was ever near counts).
+  `<x> <z>` without a time are coordinates, e.g. `/chunkscan 100 -200`.
 - Center:
   - `chunky` – Chunky's current selection (`/chunky world`, `/chunky center`)
   - `spawn [world]` – the world spawn
@@ -34,20 +35,23 @@ Tab completion suggests the options.
 
 Permission: `chunkscan.use` (op by default).
 
-The scan uses every CPU core and is built for maintenance windows: run it when nobody is online.
+The scan uses every CPU core and is built for maintenance windows: run it from the console when nobody is
+online. It warns when players are online and when it is run in-game.
 The world is saved first so loaded chunks are included, and the center that was used is printed at the start.
 
 ### Chunky during a scan
 
 So that no region files change while they are read, a scan pauses every running Chunky task
-(`pause-chunky: true`). If another plugin continues Chunky during the scan (for example ChunkyAutoPause's idle
-watcher), ChunkScan pauses it again within a second. When the scan is done, every task paused this way is
-continued. Other plugins are never disabled.
+(`pause-chunky: true`) and continues it afterwards. Plugins that continue Chunky on their own, such as
+ChunkyAutoPause, could resume it during the scan; if one listed in `auto-continue-plugins` is installed, the scan
+warns that it should be removed temporarily. ChunkScan never disables other plugins itself.
 
 `plugins/ChunkScan/config.yml`:
 
 ```yaml
 pause-chunky: true
+auto-continue-plugins:
+  - ChunkyAutoPause
 update-check: true
 ```
 
@@ -62,7 +66,13 @@ In chat:
 - distribution of InhabitedTime over all generated chunks
 - smallest circle and square radius (in blocks) that fully contain every visited chunk, the chunk that defines it,
   and how many chunks would be outside
-- the `/chunky` command(s) to set that radius
+- the current size of the world folder and of the dimension's chunk data (`region/`, `entities/`, `poi/`)
+- for each radius, the expected size after trimming
+- the steps to trim: `/chunky radius …`, `/chunky trim`, `/chunky confirm`, then a server restart
+
+The forecast follows how Chunky trims: a region file (with its `poi`/`entities` files) is deleted only when
+every chunk center in it lies outside the shape. Region files on the border lose chunks but keep their size,
+so the space is freed by the regions that lie completely outside.
 
 In `plugins/ChunkScan/`:
 - `<world>-<time>.png` – heatmap, one pixel per chunk, north up. Dark gray: generated but never visited,

@@ -27,6 +27,31 @@ public final class TimeParse {
         return v * mult;
     }
 
+    /**
+     * Whether args[0] of /chunkscan is the minTime. Not when it isn't a time, and not for "x z" or "x z world",
+     * where the first two numbers are coordinates.
+     */
+    public static boolean startsWithTime(String[] args) {
+        if (args.length == 0) return false;
+        try {
+            toTicks(args[0]);
+        } catch (NumberFormatException e) {
+            return false;
+        }
+        boolean coordsFirst = args.length >= 2 && isInt(args[0]) && isInt(args[1])
+                && (args.length == 2 || (args.length == 3 && !isInt(args[2])));
+        return !coordsFirst;
+    }
+
+    static boolean isInt(String s) {
+        try {
+            Integer.parseInt(s);
+            return true;
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    }
+
     public static String format(long ticks) {
         if (ticks % 20 != 0) return ticks + "t";
         long s = ticks / 20;

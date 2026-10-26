@@ -51,15 +51,14 @@ public final class ChunkScanPlugin extends JavaPlugin implements Listener {
         if (rawArgs.length == 1 && rawArgs[0].equalsIgnoreCase("version")) return versionCommand(sender);
         boolean export = hasFlag(rawArgs);
         String[] args = stripFlag(rawArgs);
-        if (args.length < 1 || args.length > 4) return usage(sender, label);
-
-        long thresholdTicks;
-        try {
-            thresholdTicks = TimeParse.toTicks(args[0]);
-        } catch (NumberFormatException e) {
-            sender.sendMessage(P + "§cInvalid time: " + args[0]);
-            return true;
+        if (!TimeParse.startsWithTime(args)) { // minTime is optional and defaults to 0
+            String[] withTime = new String[args.length + 1];
+            withTime[0] = "0";
+            System.arraycopy(args, 0, withTime, 1, args.length);
+            args = withTime;
         }
+        if (args.length > 4) return usage(sender, label);
+        long thresholdTicks = TimeParse.toTicks(args[0]);
 
         // Center modes: chunky | spawn [world] | origin [world] | here | <x> <z> [world]
         // No mode: Chunky selection if available, else your position (or spawn from console).
@@ -163,7 +162,17 @@ public final class ChunkScanPlugin extends JavaPlugin implements Listener {
         sender.sendMessage(P + "§eCenter: X " + cx + ", Z " + cz + " in " + world.getName() + "§r (" + source + ")");
 
         // keep Chunky from changing region files while they are read
-        final ScanGuard guard = ScanGuard.begin(this, sender, getConfig().getBoolean("pause-chunky", true));
+        if (sender instanceof Player) {
+            sender.sendMessage(P + "§eYou are running this in-game. Better leave the server and run it from the console:"
+                    + " the scan makes the server lag, and trimming afterwards needs a restart anyway.");
+        }
+        int online = Bukkit.getOnlinePlayers().size();
+        if (online > 0) {
+            sender.sendMessage(P + "§eWarning: " + online + (online == 1 ? " player is" : " players are")
+                    + " online. Run scans and trims when the server is empty.");
+        }
+        final ScanGuard guard = ScanGuard.begin(sender, getConfig().getBoolean("pause-chunky", true),
+                getConfig().getStringList("auto-continue-plugins"));
 
         // flush loaded chunks so the files contain current InhabitedTime values
         sender.sendMessage(P + "Saving " + world.getName() + "...");
@@ -206,7 +215,9 @@ public final class ChunkScanPlugin extends JavaPlugin implements Listener {
                 a.writeHeatmap(r, png, 4096);
 
                 long secs = (System.currentTimeMillis() - start) / 1000;
-                List<String> lines = a.summary(r);
+                SizeForecast sizes = SizeForecast.measure(regionDir.getParentFile());
+                long worldBytes = SizeForecast.folderBytes(fworld.getWorldFolder());
+                List<String> lines = a.summary(r, sizes, worldBytes);
                 final long rows = exportedRows;
                 Bukkit.getScheduler().runTask(this, () -> {
                     sender.sendMessage(P + "§aDone in " + secs + "s.");
@@ -269,26 +280,28 @@ public final class ChunkScanPlugin extends JavaPlugin implements Listener {
     }
 
     private void suggestChunky(CommandSender sender, Analysis a, String world, int cx, int cz, String chunkyShape) {
-        if (chunkyShape != null) {
-            // center/world already match Chunky; only the radius has to be set
-            if (chunkyShape.equals("circle")) {
-                sender.sendMessage(P + "§eChunky: /chunky radius " + a.circleRadius);
-            } else if (chunkyShape.equals("square")) {
-                sender.sendMessage(P + "§eChunky: /chunky radius " + a.squareRadius);
-            } else {
-                sender.sendMessage(P + "§eChunky shape is " + chunkyShape + "; switch to circle or square: "
-                        + "/chunky shape circle + /chunky radius " + a.circleRadius
-                        + "  or  /chunky shape square + /chunky radius " + a.squareRadius);
-            }
+        List<String> steps = new ArrayList<>();
+        if (chunkyShape != null && (chunkyShape.equals("circle") || chunkyShape.equals("square"))) {
+            // world, center and shape already match Chunky's selection; only the radius has to be set
+            steps.add("/chunky radius " + (chunkyShape.equals("circle") ? a.circleRadius : a.squareRadius));
         } else {
-            sender.sendMessage(P + "§eChunky: /chunky world " + world + " | /chunky center " + cx + " " + cz
-                    + " | /chunky shape circle | /chunky radius " + a.circleRadius);
+            if (chunkyShape == null) {
+                steps.add("/chunky world " + world);
+                steps.add("/chunky center " + cx + " " + cz);
+            }
+            steps.add("/chunky shape circle");
+            steps.add("/chunky radius " + a.circleRadius);
         }
+        steps.add("/chunky trim");
+        steps.add("/chunky confirm");
+        sender.sendMessage(P + "§eTo delete everything outside that radius (make a backup first):");
+        for (int i = 0; i < steps.size(); i++) sender.sendMessage(P + "§e  " + (i + 1) + ". " + steps.get(i));
+        sender.sendMessage(P + "§e  " + (steps.size() + 1) + ". Restart the server (Chunky requires a full restart after trimming).");
     }
 
     private boolean usage(CommandSender sender, String label) {
-        sender.sendMessage(P + "Usage: /" + label + " <minTime> [chunky | spawn [world] | origin [world] | here | <x> <z> [world]] [--export]");
-        sender.sendMessage(P + "minTime: e.g. 30s, 5m, 1h, 600t (ticks); a plain number means seconds.");
+        sender.sendMessage(P + "Usage: /" + label + " [minTime] [chunky | spawn [world] | origin [world] | here | <x> <z> [world]] [--export]");
+        sender.sendMessage(P + "minTime: e.g. 30s, 5m, 1h, 600t (ticks); a plain number means seconds. Default: 0.");
         sender.sendMessage(P + "Center: chunky = Chunky's selection, spawn = world spawn, origin = 0 0, here = your position.");
         sender.sendMessage(P + "Without a center, Chunky's selection is used (else your position / spawn).");
         sender.sendMessage(P + "--export also writes a CSV listing every generated chunk with its details.");
@@ -323,11 +336,17 @@ public final class ChunkScanPlugin extends JavaPlugin implements Listener {
         if (rawArgs.length == 0) return options;
         // complete as if --export weren't there (it may appear anywhere after minTime)
         String[] earlier = stripFlag(Arrays.copyOf(rawArgs, rawArgs.length - 1));
+        if (earlier.length > 0 && !TimeParse.startsWithTime(earlier)) { // complete as if minTime 0 had been typed
+            String[] withTime = new String[earlier.length + 1];
+            withTime[0] = "0";
+            System.arraycopy(earlier, 0, withTime, 1, earlier.length);
+            earlier = withTime;
+        }
         String[] args = Arrays.copyOf(earlier, earlier.length + 1);
         args[args.length - 1] = rawArgs[rawArgs.length - 1];
         if (args.length >= 2 && !hasFlag(rawArgs)) options.add(EXPORT_FLAG);
         if (args.length == 1) {
-            options.addAll(Arrays.asList("30s", "1m", "5m", "30m", "1h", "version"));
+            options.addAll(Arrays.asList("30s", "1m", "5m", "30m", "1h", "chunky", "spawn", "origin", "here", "version"));
         } else if (args.length == 2) {
             options.addAll(Arrays.asList("chunky", "spawn", "origin", "here"));
             if (sender instanceof Player) options.add(String.valueOf(((Player) sender).getLocation().getBlockX()));

@@ -104,9 +104,14 @@ public class RegionScannerCheck {
     }
 
     public static void main(String[] args) throws Exception {
-        File dir = new File(args[0]);
+        File dim = new File(args[0]);
+        File dir = new File(dim, "region");
         dir.mkdirs();
-        for (File f : dir.listFiles()) f.delete();
+        for (String sub : new String[]{"region", "poi", "entities"}) {
+            File d = new File(dim, sub);
+            d.mkdirs();
+            for (File f : d.listFiles()) f.delete();
+        }
 
         writeRegion(dir, 0, 0, new Object[][]{
             {0, 2, compress(modernChunk(0, 0, 100000), 2)},             // 0,0 zlib, 83 min
@@ -148,6 +153,32 @@ public class RegionScannerCheck {
         check(TimeParse.toTicks("600t") == 600 && TimeParse.toTicks("5m") == 6000
                 && TimeParse.toTicks("2") == 40 && TimeParse.toTicks("1h") == 72000
                 && TimeParse.format(1200).equals("1m") && TimeParse.format(700).equals("35s"), "time parsing");
+
+        // size forecast: region/poi/entities files of regions completely outside the shape are deleted
+        Files.write(new File(dim, "poi/r.2.0.mca").toPath(), new byte[10000]);
+        Files.write(new File(dim, "entities/r.0.0.mca").toPath(), new byte[3000]);
+        Files.write(new File(dim, "entities/r.9.9.mca").toPath(), new byte[500]); // no region file: never trimmed
+        SizeForecast sf = SizeForecast.measure(dim);
+        long r00 = new File(dir, "r.0.0.mca").length(), r11 = new File(dir, "r.-1.-1.mca").length();
+        long r20 = new File(dir, "r.2.0.mca").length(), mcc = new File(dir, "c.-20.-10.mcc").length();
+        check(sf.dimensionBytes == r00 + r11 + r20 + mcc + 10000 + 3000 + 500, "measured dimension size");
+        long after = sf.forecast(SizeForecast.Shape.circle(0, 0, 725));
+        check(after == r00 + r11 + mcc + 3000 + 500 && sf.deletedRegionFiles == 2,
+                "circle forecast keeps r.0.0 and r.-1.-1, deletes r.2.0 (+poi) and empty r.5.5: " + SizeForecast.human(after));
+        check(sf.forecast(SizeForecast.Shape.square(0, 0, 1100)) == sf.dimensionBytes && sf.deletedRegionFiles == 1,
+                "square reaching into r.2.0 keeps it (only empty r.5.5 goes)");
+        check(SizeForecast.fullyOutside(2, 0, SizeForecast.Shape.square(0, 0, 1031))
+                && !SizeForecast.fullyOutside(2, 0, SizeForecast.Shape.square(0, 0, 1032)), "chunk-center rule like Chunky");
+        check(SizeForecast.human(1536).equals("1.5 KB") && SizeForecast.human(5L << 30).equals("5.0 GB"), "size format");
+        java.util.List<String> lines2 = a.summary(r, sf, sf.dimensionBytes + 1000);
+        for (String l : lines2) if (l.contains("size") || l.contains("after trim")) System.out.println("  " + l);
+
+        // minTime is optional; "x z" and "x z world" are coordinates
+        check(TimeParse.startsWithTime(new String[]{"5m"}) && TimeParse.startsWithTime(new String[]{"30", "100", "200"})
+                && TimeParse.startsWithTime(new String[]{"30", "chunky"})
+                && !TimeParse.startsWithTime(new String[]{}) && !TimeParse.startsWithTime(new String[]{"chunky"})
+                && !TimeParse.startsWithTime(new String[]{"100", "-200"})
+                && !TimeParse.startsWithTime(new String[]{"100", "200", "world"}), "optional minTime");
 
         // update checker: version comparison and GitHub response parsing
         check(UpdateChecker.compare("1.10.0", "1.9.3") > 0 && UpdateChecker.compare("v1.3.0", "1.3.0") == 0
